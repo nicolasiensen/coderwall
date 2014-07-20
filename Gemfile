@@ -3,12 +3,12 @@ source 'https://rails-assets.org'
 
 ruby '2.1.2'
 
-gem 'rails', '~> 3.2'
+gem 'rails', '~> 4.1.4'
 
 gem 'sass', '~> 3.2.9'
-gem 'coffee-rails', '~> 3.2.1'
+gem 'coffee-rails', '~> 4.0.1'
 gem 'compass-rails'
-gem 'sass-rails', '~> 3.2.6'
+gem 'sass-rails', '~> 4.0.3'
 gem 'uglifier', '>= 1.0.3'
 # Assets
 gem 'rails-assets-font-awesome'
@@ -37,7 +37,7 @@ gem 'hamlbars', '1.1.0' #haml support for handlebars/ember.js
 gem 'pg'
 
 # AREL support for RDBMS queries
-gem 'squeel', '1.0.1'
+gem 'squeel', '1.1.0'
 
 # Authentication
 gem 'omniauth', '~> 1.1.0'
