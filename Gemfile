@@ -17,8 +17,6 @@ gem 'rails-assets-font-awesome'
 # Load environment variables first
 gem 'dotenv-rails', groups: [:development, :test]
 
-gem 'strong_parameters'
-
 # Attachements
 gem 'carrierwave'
 gem 'carrierwave_backgrounder', '0.0.8' #background processing of images
@@ -37,7 +35,7 @@ gem 'hamlbars', '1.1.0' #haml support for handlebars/ember.js
 gem 'pg'
 
 # AREL support for RDBMS queries
-gem 'squeel', '1.1.0'
+gem 'squeel'
 
 # Authentication
 gem 'omniauth', '~> 1.1.0'
