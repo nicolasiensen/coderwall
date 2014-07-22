@@ -79,7 +79,7 @@ gem 'stripe', github: 'stripe/stripe-ruby'
 gem 'feedjira'
 
 # ElasticSearch client
-gem 'tire'
+gem 'elasticsearch-model'
 
 # A/B testing
 gem 'split', require: 'split/dashboard'
