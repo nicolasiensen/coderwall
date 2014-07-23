@@ -16,7 +16,7 @@ class Protip < ActiveRecord::Base
 
   acts_as_commentable
 
-  include ProtipMapping
+  include ProtipSearch
 
   paginates_per(PAGESIZE = 18)
 
@@ -76,9 +76,7 @@ class Protip < ActiveRecord::Base
   before_save :recalculate_score!
 
   # Begin these three lines fail the test
-  after_save :index_search
-  after_save :unqueue_flagged, if: :flagged?
-  after_destroy :index_search_after_destroy
+
   after_create :update_network
   after_create :analyze_spam
   # End of test failing lines
@@ -113,198 +111,10 @@ class Protip < ActiveRecord::Base
       p.save!
     end
 
-    def trending_topics
-      trending_protips = search(nil, [], page: 1, per_page: 100)
 
-      unless trending_protips.respond_to?(:errored?) and trending_protips.errored?
-        static_trending = ENV['FEATURED_TOPICS'].split(",").map(&:strip).map(&:downcase) unless ENV['FEATURED_TOPICS'].blank?
-        dynamic_trending = trending_protips.map { |p| p.tags }.flatten.reduce(Hash.new(0)) { |h, tag| h.tap { |h| h[tag] += 1 } }.sort { |a1, a2| a2[1] <=> a1[1] }.map { |entry| entry[0] }.reject { |tag| User.where(username: tag).any? }
-        ((static_trending || []) + dynamic_trending).uniq
-      else
-        Tag.last(20).map(&:name).reject { |name| User.exists?(username: name) }
-      end
-    end
 
     def with_public_id(public_id)
       where(public_id: public_id).first
-    end
-
-    def search_next(query, tag, index, page)
-      return nil if page.nil? || (tag.blank? && query.blank?) #when your viewing a protip if we don't check this it thinks we came from trending and shows the next trending prootip eventhough we directly landed here
-      page = (index.to_i * page.to_i) + 1
-      tag = [tag] unless tag.is_a?(Array) || tag.nil?
-      search(query, tag, page: page, per_page: 1).results.try(:first)
-    end
-
-    def search(query_string, tags =[], options={})
-      query, team, author, bookmarked_by, execution, sorts= preprocess_query(query_string)
-      tags = [] if tags.nil?
-      tags = preprocess_tags(tags)
-      tag_ids = process_tags_for_search(tags)
-      tag_ids = [0] if !tags.blank? and tag_ids.blank?
-
-      Protip.__elasticsearch__.refresh_index! if Rails.env.test?
-      filters = []
-      filters << {term: {upvoters: bookmarked_by}} unless bookmarked_by.nil?
-      filters << {term: {'user.user_id' => author}} unless author.nil?
-      Rails.logger.debug "SEARCH: query=#{query}, tags=#{tags}, team=#{team}, author=#{author}, bookmarked_by=#{bookmarked_by}, execution=#{execution}, sorts=#{sorts} from query-string=#{query_string}, #{options.inspect}"  if ENV['DEBUG']
-      begin
-        Protip.search(options) do
-          query { string query, default_operator: 'AND', use_dis_max: true } unless query.blank?
-          filter :terms, tag_ids: tag_ids, execution: execution unless tag_ids.blank?
-          filter :term, teams: team unless team.nil?
-          if filters.size >= 2
-            filter :or, *filters
-          else
-            filters.each do |fltr|
-              filter *fltr.first
-            end
-          end
-          # sort { by [sorts] }
-          #sort { by [{:upvotes => 'desc' }] }
-        end
-      rescue Exception => e
-        SearchResultsWrapper.new(nil, "Looks like our search servers are out to lunch. Try again soon.")
-      end
-    end
-
-    def popular
-      Protip::Search.new(Protip,
-                         nil,
-                         nil,
-                         Protip::Search::Sort.new(:popular_score),
-                         nil,
-                         nil).execute
-    end
-
-    def trending
-      Protip::Search.new(Protip,
-                         nil,
-                         nil,
-                         Protip::Search::Sort.new(:trending_score),
-                         nil,
-                         nil).execute
-    end
-
-    def trending_for_user(user)
-      Protip::Search.new(Protip,
-                         nil,
-                         Protip::Search::Scope.new(:user, user),
-                         Protip::Search::Sort.new(:trending_score),
-                         nil,
-                         nil).execute
-    end
-
-    def hawt_for_user(user)
-      Protip::Search.new(Protip,
-                         Protip::Search::Query.new('best_stat.name:hawt'),
-                         Protip::Search::Scope.new(:user, user),
-                         Protip::Search::Sort.new(:created_at),
-                         nil,
-                         nil).execute
-    end
-
-    def hawt
-      Protip::Search.new(Protip,
-                         Protip::Search::Query.new('best_stat.name:hawt'),
-                         nil,
-                         Protip::Search::Sort.new(:created_at),
-                         nil,
-                         nil).execute
-    end
-
-    def trending_by_topic_tags(tags)
-      trending.topics(tags.split("/"), true)
-    end
-
-    def top_trending(page = 1, per_page = PAGESIZE)
-      page = 1 if page.nil?
-      per_page = PAGESIZE if per_page.nil?
-      search_trending_by_topic_tags(nil, [], page, per_page)
-    end
-
-    def search_trending_by_team(team_id, query_string, page, per_page)
-      options = { page: page, per_page: per_page }
-      force_index_commit = Protip.tire.index.refresh if Rails.env.test?
-      query = "team.name:#{team_id.to_s}"
-      query              += " #{query_string}" unless query_string.nil?
-      Protip.search(query, [], page: page, per_page: per_page)
-    rescue Errno::ECONNREFUSED
-      team = Team.where(slug: team_id).first
-      team.team_members.collect(&:protips).flatten
-    end
-
-    def search_trending_by_user(username, query_string, tags, page, per_page)
-      query = "author:#{username}"
-      query += " #{query_string}" unless query_string.nil?
-      Protip.search(query, tags, page: page, per_page: per_page)
-    end
-
-    def search_trending_by_topic_tags(query, tags, page, per_page)
-      Protip.search(query, tags, page: page, per_page: per_page)
-    end
-
-    def search_trending_by_date(query, date, page, per_page)
-      date_string = "#{date.midnight.strftime('%Y-%m-%dT%H:%M:%S')} TO #{(date.midnight + 1.day).strftime('%Y-%m-%dT%H:%M:%S')}" unless date.is_a?(String)
-      query = "" if query.nil?
-      query += " created_at:[#{date_string}]"
-      Protip.search(query, [], page: page, per_page: per_page)
-    end
-
-    def search_bookmarked_protips(username, page, per_page)
-      Protip.search("bookmark:#{username}", [], page: page, per_page: per_page)
-    end
-
-    def most_interesting_for(user, since=Time.at(0), page = 1, per_page = 10)
-      search_top_trending_since("only_link:false", since, user.networks.map(&:ordered_tags).flatten.concat(user.skills.map(&:name)), page, per_page)
-    end
-
-    def search_top_trending_since(query, since, tags, page = 1, per_page = 10)
-      query ||= ""
-      query += " created_at:[#{since.strftime('%Y-%m-%dT%H:%M:%S')} TO *] sort:upvotes desc"
-      search_trending_by_topic_tags(query, tags, page, per_page)
-    end
-
-    def preprocess_query(query_string)
-      query = team = nil
-      unless query_string.nil?
-        query = query_string.dup
-        query.gsub!(/(\d+)\"/, "\\1\\\"") #handle 27" cases
-        team = query.gsub!(/(team:([0-9A-Z\-]+))/i, "") && $2
-        team = (team =~ /^[a-f0-9]+$/i && team.length == 24 ? team : Team.where(slug: team).first.try(:id))
-        author = query.gsub!(/author:([^\. ]+)/i, "") && $1.try(:downcase)
-        author = User.find_by_username(author).try(:id) || 0 unless author.nil? or (author =~ /^\d+$/)
-        bookmarked_by = query.gsub!(/bookmark:([^\. ]+)/i, "") && $1
-        bookmarked_by = User.find_by_username(bookmarked_by).try(:id) unless bookmarked_by.nil? or (bookmarked_by =~ /^\d+$/)
-        execution = query.gsub!(/execution:(plain|bool|and)/, "") && $1.to_sym
-        sorts_string = query.gsub!(/sort:([[\w\d_]+\s+(desc|asc),?]+)/i, "") && $1
-        sorts = Hash[sorts_string.split(",").map { |sort| sort.split(/\s/) }] unless sorts_string.nil?
-        flagged = query.gsub!(/flagged:(true|false)/, "") && $1 == "true"
-        query.gsub!(/\!{2,}\s*/, "") unless query.nil?
-
-      end
-      execution = :plain if execution.nil?
-      sorts = { created_at: 'desc' } if sorts.blank?
-      flagged = false if flagged.nil?
-      query = "#{query} flagged:#{flagged}"
-
-      [query, team, author, bookmarked_by, execution, sorts]
-    end
-
-    def preprocess_tags(tags)
-      tags.collect do |tag|
-        preprocess_tag(tag)
-      end unless tags.nil?
-    end
-
-    def preprocess_tag(tag)
-      match = tag.downcase.strip.match(VALID_TAG)
-      sanitized_tag = match[0] unless match.nil?
-      sanitized_tag
-    end
-
-    def process_tags_for_search(tags)
-      tags.blank? ? [] : ActiveRecord::Base.connection.select_values(Tag.where(name: tags).select(:id).to_sql).map(&:to_i)
     end
 
     def already_created_a_protip_for(url)
@@ -323,25 +133,6 @@ class Protip < ActiveRecord::Base
     end
 
   end
-
-  #######################
-  # Homepage 4.0 rewrite
-  #######################
-  #TODO REMOVE
-    def deindex_search
-      ProtipIndexer.new(self).remove
-    end
-    def index_search
-      ProtipIndexer.new(self).store
-    end
-
-    def index_search_after_destroy
-      self.tire.update_index
-    end
-
-    def unqueue_flagged
-      ProcessingQueue.unqueue(self, :auto_tweet)
-    end
 
 
   def networks
